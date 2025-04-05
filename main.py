@@ -7,7 +7,7 @@ from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
-# LangChain imports...
+# LangChain imports
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -26,7 +26,7 @@ DB_FILE = "chat_history.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    # add user_id to conversations
+    # conversations now include user_id
     c.execute("""
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +73,6 @@ def create_new_conversation(user_id, title):
     conn.close()
     return conv_id
 
-# (chat_messages unchanged)
 def load_messages(conv_id):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
@@ -104,15 +103,13 @@ def push_to_github():
     os.system("git push")
 
 
-# --- INIT & USER IDENTIFICATION ---
+# --- INITIALIZE & IDENTIFY USER ---
 init_db()
-
 if "user_id" not in st.session_state:
-    # create a per‑visitor UUID
     st.session_state.user_id = str(uuid.uuid4())
 
 
-# --- VECTOR STORE SETUP (unchanged) ---
+# --- BUILD VECTOR RETRIEVER ---
 @st.cache_resource
 def build_retriever():
     loader = PyPDFLoader("who_am_I.pdf")
@@ -128,6 +125,8 @@ def build_retriever():
 
 retriever, all_docs = build_retriever()
 
+
+# --- PROMPT TEMPLATE ---
 prompt = ChatPromptTemplate([
     """
     You have to act like Injamul. Your bio is provided in the context.
@@ -151,38 +150,42 @@ prompt = ChatPromptTemplate([
 st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")
 st.sidebar.title("💬 Your Conversations")
 
-# 1) Load only this user’s conversations
 user_id = st.session_state.user_id
+
+# 1) Load this user’s conversations
 convs = load_conversations(user_id)
+
+# 2) If none exist, create a first conversation automatically
+if not convs:
+    first_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
+    st.session_state.current_conv = first_id
+    convs = load_conversations(user_id)
+
+# 3) Build the selectbox options
 options = [f"{c['id']}: {c['title']} ({c['created_at']})" for c in convs]
 
-# 2) Initialize or switch current conversation
-if "current_conv" not in st.session_state:
-    if convs:
-        st.session_state.current_conv = convs[0]["id"]
-    else:
-        # no existing chats → make a new one
-        st.session_state.current_conv = create_new_conversation(
-            user_id, "Chat " + time.strftime("%H:%M:%S")
-        )
+# 4) Determine default index
+default_idx = 0
+for i, c in enumerate(convs):
+    if c["id"] == st.session_state.get("current_conv", None):
+        default_idx = i
+        break
 
-selected = st.sidebar.selectbox(
-    "Select Conversation",
-    options,
-    index=next((i for i, c in enumerate(convs) if c["id"] == st.session_state.current_conv), 0)
-)
-sel_id = int(selected.split(":")[0])
-if sel_id != st.session_state.current_conv:
-    st.session_state.current_conv = sel_id
+# 5) Render selectbox and update current_conv safely
+selected = st.sidebar.selectbox("Select Conversation", options, index=default_idx)
+if selected:
+    sel_id = int(selected.split(":")[0])
+    if sel_id != st.session_state.current_conv:
+        st.session_state.current_conv = sel_id
 
-# 3) “New Conversation” button
+# 6) “New Conversation” button
 if st.sidebar.button("➕ New Conversation"):
     new_title = f"Chat {time.strftime('%H:%M:%S')}"
     new_id = create_new_conversation(user_id, new_title)
     st.session_state.current_conv = new_id
-    # no rerun needed—sidebar will refresh next interaction
+    # no rerun needed; sidebar updates on next interaction
 
-# 4) Load & display history for the active conversation
+# 7) Load and display message history
 history = load_messages(st.session_state.current_conv)
 st.session_state.chat_history = history
 
@@ -199,7 +202,7 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 5) Handle new user input
+# 8) Handle new user input
 user_input = st.chat_input("Type your message…")
 if user_input:
     add_message(st.session_state.current_conv, "user", user_input)
