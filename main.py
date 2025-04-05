@@ -168,14 +168,13 @@ if not convs:
     convs = load_conversations(user_id)
 
 # Build options for selectbox
-options = [f"{c['id']}: {c['title']} ({c['created_at']})" for c in convs]
+options = [c['title'] for c in convs]
 default_idx = next((i for i, c in enumerate(convs) if c["id"] == st.session_state.get("current_conv")), 0)
 
-# Select a conversation
-selected = st.sidebar.selectbox("Select Conversation", options, index=default_idx)
-if selected:
-    sel_id = int(selected.split(":")[0])
-    st.session_state.current_conv = sel_id
+selected_title = st.sidebar.selectbox("Select Conversation", options, index=default_idx)
+if selected_title:
+    selected_conv = next(c for c in convs if c["title"] == selected_title)
+    st.session_state.current_conv = selected_conv["id"]
 
 # Delete button for the selected conversation
 if st.sidebar.button("🗑️ Delete Selected"):
