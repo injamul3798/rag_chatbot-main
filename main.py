@@ -23,7 +23,6 @@ DB_FILE = "chat_history.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Table for conversation sessions
     c.execute("""
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +30,6 @@ def init_db():
             created_at TEXT
         )
     """)
-    # Table for messages linked to a conversation session
     c.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +81,6 @@ def add_message(conversation_id, role, content):
     conn.close()
 
 def push_to_github():
-    # Ensure your local repository is set up with credentials/config for automated pushes.
     os.system("git add " + DB_FILE)
     os.system('git commit -m "Update conversation data"')
     os.system("git push")
@@ -125,97 +122,81 @@ prompt = ChatPromptTemplate([
 
 # === Session State Setup ===
 if "current_conversation_id" not in st.session_state:
-    # Create a new conversation if none exists.
     st.session_state.current_conversation_id = create_new_conversation("New Conversation " + time.strftime("%H:%M:%S"))
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = load_messages(st.session_state.current_conversation_id)
 
-# === Sidebar: Conversation Sessions List (ChatGPT-like) ===
-st.sidebar.title("ChatGPT Conversations")
-conversations = load_conversations()
-conversation_options = []
-for conv in conversations:
-    # Format: id: Title (Created_at)
-    conversation_options.append(f"{conv['id']}: {conv['title']} ({conv['created_at']})")
+# Define a function to render the app, so we can call it when needed.
+def render_app():
+    st.sidebar.title("ChatGPT Conversations")
+    conversations = load_conversations()
+    conversation_options = []
+    for conv in conversations:
+        conversation_options.append(f"{conv['id']}: {conv['title']} ({conv['created_at']})")
 
-# Use a selectbox for clickable sessions; default selection is the current conversation
-default_idx = 0
-for idx, conv in enumerate(conversations):
-    if conv["id"] == st.session_state.current_conversation_id:
-        default_idx = idx
-        break
+    default_idx = 0
+    for idx, conv in enumerate(conversations):
+        if conv["id"] == st.session_state.current_conversation_id:
+            default_idx = idx
+            break
 
-selected_conv = st.sidebar.selectbox("Select Conversation", conversation_options, index=default_idx)
+    selected_conv = st.sidebar.selectbox("Select Conversation", conversation_options, index=default_idx)
+    selected_conv_id = int(selected_conv.split(":")[0])
+    if selected_conv_id != st.session_state.current_conversation_id:
+        st.session_state.current_conversation_id = selected_conv_id
+        st.session_state.chat_messages = load_messages(selected_conv_id)
+        # Since we don't have experimental_rerun, call render_app() manually
+        render_app()
+        return
 
-# When a new session is selected, load its messages
-selected_conv_id = int(selected_conv.split(":")[0])
-if selected_conv_id != st.session_state.current_conversation_id:
-    st.session_state.current_conversation_id = selected_conv_id
-    st.session_state.chat_messages = load_messages(selected_conv_id)
-    st.experimental_rerun()
+    if st.sidebar.button("New Conversation"):
+        new_title = st.sidebar.text_input("Enter conversation title", value="New Conversation " + time.strftime("%H:%M:%S"))
+        new_conv_id = create_new_conversation(new_title)
+        st.session_state.current_conversation_id = new_conv_id
+        st.session_state.chat_messages = []
+        render_app()
+        return
 
-# Button to start a new conversation
-if st.sidebar.button("New Conversation"):
-    new_title = st.sidebar.text_input("Enter conversation title", value="New Conversation " + time.strftime("%H:%M:%S"))
-    # Create a new conversation and update session state
-    new_conv_id = create_new_conversation(new_title)
-    st.session_state.current_conversation_id = new_conv_id
-    st.session_state.chat_messages = []
-    st.experimental_rerun()
+    st.title("💬 Chat with Injamul")
+    model_choice = st.selectbox(
+        "Select a model for responses:",
+        [
+          "llama-3.1-8b-instant",
+          "gemma2-9b-it",
+          "deepseek-r1-distill-llama-70b",
+          "deepseek-r1-distill-qwen-32b",
+          "qwen-2.5-32b"
+        ]
+    )
 
-# === Main Chat UI ===
-st.title("💬 Chat with Injamul")
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-# Place model selection above the chat history in the main area
-model_choice = st.selectbox(
-    "Select a model for responses:",
-    [
-      "llama-3.1-8b-instant",
-      "gemma2-9b-it",
-      "deepseek-r1-distill-llama-70b",
-      "deepseek-r1-distill-qwen-32b",
-      "qwen-2.5-32b"
-    ]
-)
+    input_query = st.chat_input("Type your message…")
+    if input_query:
+        st.session_state.chat_messages.append({"role": "user", "content": input_query, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        add_message(st.session_state.current_conversation_id, "user", input_query)
+        with st.chat_message("user"):
+            st.markdown(input_query)
 
-# Display the full conversation in the main chat window
-for msg in st.session_state.chat_messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        recent = st.session_state.chat_messages[-5:]
+        previous_context = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in recent])
+        GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+        llm = ChatGroq(model=model_choice, api_key=GROQ_API_KEY)
+        doc_chain = create_stuff_documents_chain(llm, prompt)
+        retrieval_chain = create_retrieval_chain(retriever, doc_chain)
+        result = retrieval_chain.invoke({
+            "input": input_query,
+            "previous_conversation": previous_context,
+            "context": "\n".join([d.page_content for d in documents]),
+        })
+        answer = result["answer"].split("</think>")[-1].strip()
+        st.session_state.chat_messages.append({"role": "assistant", "content": answer, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        add_message(st.session_state.current_conversation_id, "assistant", answer)
+        with st.chat_message("assistant"):
+            st.markdown(answer)
+        push_to_github()
 
-# === Chat Input & Processing ===
-input_query = st.chat_input("Type your message…")
-if input_query:
-    # Append user message to session state and save in DB
-    st.session_state.chat_messages.append({"role": "user", "content": input_query, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-    add_message(st.session_state.current_conversation_id, "user", input_query)
-    with st.chat_message("user"):
-        st.markdown(input_query)
-
-    # Build previous conversation context (using last 5 messages)
-    recent = st.session_state.chat_messages[-5:]
-    previous_context = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in recent])
-    
-    # Initialize the LLM with your API key and chosen model
-    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-    llm = ChatGroq(model=model_choice, api_key=GROQ_API_KEY)
-    
-    # Build retrieval chain (with context from the PDF)
-    doc_chain = create_stuff_documents_chain(llm, prompt)
-    retrieval_chain = create_retrieval_chain(retriever, doc_chain)
-    
-    result = retrieval_chain.invoke({
-        "input": input_query,
-        "previous_conversation": previous_context,
-        "context": "\n".join([d.page_content for d in documents]),
-    })
-    answer = result["answer"].split("</think>")[-1].strip()
-    
-    # Append assistant message to session state and save in DB
-    st.session_state.chat_messages.append({"role": "assistant", "content": answer, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-    add_message(st.session_state.current_conversation_id, "assistant", answer)
-    with st.chat_message("assistant"):
-        st.markdown(answer)
-
-    # Optionally push changes to GitHub after conversation update
-    push_to_github()
+# Render the app
+render_app()
