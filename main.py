@@ -1,12 +1,13 @@
 import os
 import time
+import uuid
 import sqlite3
 from datetime import datetime
 
 import streamlit as st
 from dotenv import load_dotenv
 
-# LangChain imports
+# LangChain imports...
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -25,9 +26,11 @@ DB_FILE = "chat_history.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
+    # add user_id to conversations
     c.execute("""
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
             title TEXT,
             created_at TEXT
         )
@@ -45,34 +48,43 @@ def init_db():
     conn.commit()
     conn.close()
 
-def load_conversations():
+def load_conversations(user_id):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    c.execute("SELECT id, title, created_at FROM conversations ORDER BY id DESC")
+    c.execute(
+        "SELECT id, title, created_at FROM conversations "
+        "WHERE user_id = ? ORDER BY id DESC",
+        (user_id,)
+    )
     rows = c.fetchall()
     conn.close()
     return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
 
+def create_new_conversation(user_id, title):
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute(
+        "INSERT INTO conversations (user_id, title, created_at) VALUES (?, ?, ?)",
+        (user_id, title, now)
+    )
+    conv_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return conv_id
+
+# (chat_messages unchanged)
 def load_messages(conv_id):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     c.execute(
         "SELECT role, content, timestamp FROM chat_messages "
-        "WHERE conversation_id = ? ORDER BY id ASC", (conv_id,)
+        "WHERE conversation_id = ? ORDER BY id ASC",
+        (conv_id,)
     )
     rows = c.fetchall()
     conn.close()
     return [{"role": r[0], "content": r[1], "timestamp": r[2]} for r in rows]
-
-def create_new_conversation(title):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("INSERT INTO conversations (title, created_at) VALUES (?, ?)", (title, now))
-    conv_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    return conv_id
 
 def add_message(conv_id, role, content):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -92,11 +104,15 @@ def push_to_github():
     os.system("git push")
 
 
-# --- INITIALIZE DB ON STARTUP ---
+# --- INIT & USER IDENTIFICATION ---
 init_db()
 
+if "user_id" not in st.session_state:
+    # create a per‑visitor UUID
+    st.session_state.user_id = str(uuid.uuid4())
 
-# --- LOAD & PREPROCESS YOUR PDF INTO A VECTOR STORE ONCE ---
+
+# --- VECTOR STORE SETUP (unchanged) ---
 @st.cache_resource
 def build_retriever():
     loader = PyPDFLoader("who_am_I.pdf")
@@ -112,8 +128,6 @@ def build_retriever():
 
 retriever, all_docs = build_retriever()
 
-
-# --- PROMPT TEMPLATE ---
 prompt = ChatPromptTemplate([
     """
     You have to act like Injamul. Your bio is provided in the context.
@@ -133,22 +147,25 @@ prompt = ChatPromptTemplate([
 ])
 
 
-# --- STREAMLIT LAYOUT & LOGIC ---
+# --- STREAMLIT UI & LOGIC ---
 st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")
-st.sidebar.title("💬 Conversations")
+st.sidebar.title("💬 Your Conversations")
 
-# Load conversations
-convs = load_conversations()
+# 1) Load only this user’s conversations
+user_id = st.session_state.user_id
+convs = load_conversations(user_id)
 options = [f"{c['id']}: {c['title']} ({c['created_at']})" for c in convs]
 
-# Initialize current conversation
+# 2) Initialize or switch current conversation
 if "current_conv" not in st.session_state:
     if convs:
         st.session_state.current_conv = convs[0]["id"]
     else:
-        st.session_state.current_conv = create_new_conversation("Chat " + time.strftime("%H:%M:%S"))
+        # no existing chats → make a new one
+        st.session_state.current_conv = create_new_conversation(
+            user_id, "Chat " + time.strftime("%H:%M:%S")
+        )
 
-# Sidebar: select conversation
 selected = st.sidebar.selectbox(
     "Select Conversation",
     options,
@@ -158,18 +175,17 @@ sel_id = int(selected.split(":")[0])
 if sel_id != st.session_state.current_conv:
     st.session_state.current_conv = sel_id
 
-# Sidebar: create new conversation
+# 3) “New Conversation” button
 if st.sidebar.button("➕ New Conversation"):
     new_title = f"Chat {time.strftime('%H:%M:%S')}"
-    new_id = create_new_conversation(new_title)
+    new_id = create_new_conversation(user_id, new_title)
     st.session_state.current_conv = new_id
-    # Note: no rerun call; the sidebar will update on next interaction
+    # no rerun needed—sidebar will refresh next interaction
 
-# Load the message history for the active conversation
+# 4) Load & display history for the active conversation
 history = load_messages(st.session_state.current_conv)
 st.session_state.chat_history = history
 
-# Main chat UI
 st.title("💬 Chat with Injamul")
 model_choice = st.selectbox("Model for responses:", [
     "llama-3.1-8b-instant",
@@ -179,27 +195,22 @@ model_choice = st.selectbox("Model for responses:", [
     "qwen-2.5-32b"
 ])
 
-# Display history
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Handle new user input
+# 5) Handle new user input
 user_input = st.chat_input("Type your message…")
 if user_input:
-    # Persist user message
     add_message(st.session_state.current_conv, "user", user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Build recent context
     recent = st.session_state.chat_history[-5:]
     prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
 
-    # Generate assistant response
-    api_key = st.secrets["GROQ_API_KEY"]
-    llm = ChatGroq(model=model_choice, api_key=api_key)
+    llm = ChatGroq(model=model_choice, api_key=st.secrets["GROQ_API_KEY"])
     doc_chain = create_stuff_documents_chain(llm, prompt)
     chain = create_retrieval_chain(retriever, doc_chain)
     result = chain.invoke({
@@ -209,11 +220,9 @@ if user_input:
     })
     answer = result["answer"].split("</think>")[-1].strip()
 
-    # Persist assistant message
     add_message(st.session_state.current_conv, "assistant", answer)
     st.session_state.chat_history.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.markdown(answer)
 
-    # (Optional) push DB to GitHub
     push_to_github()
