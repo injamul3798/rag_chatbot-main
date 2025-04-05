@@ -126,7 +126,7 @@ if "current_conversation_id" not in st.session_state:
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = load_messages(st.session_state.current_conversation_id)
 
-# Define a function to render the app, so we can call it when needed.
+# Define a function to render the app.
 def render_app():
     st.sidebar.title("ChatGPT Conversations")
     conversations = load_conversations()
@@ -145,16 +145,16 @@ def render_app():
     if selected_conv_id != st.session_state.current_conversation_id:
         st.session_state.current_conversation_id = selected_conv_id
         st.session_state.chat_messages = load_messages(selected_conv_id)
-        # Since we don't have experimental_rerun, call render_app() manually
-        render_app()
+        render_app()  # re-render the app with the new conversation
         return
 
-    if st.sidebar.button("New Conversation"):
-        new_title = st.sidebar.text_input("Enter conversation title", value="New Conversation " + time.strftime("%H:%M:%S"))
+    # New Conversation button with a unique key.
+    if st.sidebar.button("New Conversation", key="new_conv_button"):
+        new_title = st.sidebar.text_input("Enter conversation title", value="New Conversation " + time.strftime("%H:%M:%S"), key="new_conv_title")
         new_conv_id = create_new_conversation(new_title)
         st.session_state.current_conversation_id = new_conv_id
         st.session_state.chat_messages = []
-        render_app()
+        render_app()  # re-render for the new conversation
         return
 
     st.title("💬 Chat with Injamul")
