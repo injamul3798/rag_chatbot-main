@@ -20,7 +20,7 @@ st.set_page_config(page_title="Chat with Injamul", layout="wide")
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 
 # --- Document loading & splitting ---
-file_path = 'injamul.pdf'
+file_path = 'who_am_I.pdf'
 loader = PyPDFLoader(file_path)
 docs = loader.load()
 full_text = "\n".join([d.page_content for d in docs])
