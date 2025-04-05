@@ -26,7 +26,6 @@ DB_FILE = "chat_history.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    # conversations now include user_id
     c.execute("""
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +72,14 @@ def create_new_conversation(user_id, title):
     conn.close()
     return conv_id
 
+def delete_conversation(conv_id):
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    c = conn.cursor()
+    c.execute("DELETE FROM chat_messages WHERE conversation_id = ?", (conv_id,))
+    c.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
+    conn.commit()
+    conn.close()
+
 def load_messages(conv_id):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
@@ -109,7 +116,7 @@ if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 
 
-# --- BUILD VECTOR RETRIEVER ---
+# --- VECTOR STORE SETUP ---
 @st.cache_resource
 def build_retriever():
     loader = PyPDFLoader("who_am_I.pdf")
@@ -155,37 +162,42 @@ user_id = st.session_state.user_id
 # 1) Load this user’s conversations
 convs = load_conversations(user_id)
 
-# 2) If none exist, create a first conversation automatically
+# 2) If none exist, create a first one
 if not convs:
     first_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
     st.session_state.current_conv = first_id
     convs = load_conversations(user_id)
 
-# 3) Build the selectbox options
+# 3) Build sidebar options
 options = [f"{c['id']}: {c['title']} ({c['created_at']})" for c in convs]
+default_idx = next((i for i, c in enumerate(convs) if c["id"] == st.session_state.get("current_conv")), 0)
 
-# 4) Determine default index
-default_idx = 0
-for i, c in enumerate(convs):
-    if c["id"] == st.session_state.get("current_conv", None):
-        default_idx = i
-        break
-
-# 5) Render selectbox and update current_conv safely
+# 4) Select conversation
 selected = st.sidebar.selectbox("Select Conversation", options, index=default_idx)
 if selected:
     sel_id = int(selected.split(":")[0])
     if sel_id != st.session_state.current_conv:
         st.session_state.current_conv = sel_id
 
-# 6) “New Conversation” button
-if st.sidebar.button("➕ New Conversation"):
-    new_title = f"Chat {time.strftime('%H:%M:%S')}"
-    new_id = create_new_conversation(user_id, new_title)
-    st.session_state.current_conv = new_id
-    # no rerun needed; sidebar updates on next interaction
+# 5) Delete button
+if st.sidebar.button("🗑️ Delete Conversation"):
+    delete_conversation(st.session_state.current_conv)
+    # reload list
+    convs = load_conversations(user_id)
+    if convs:
+        st.session_state.current_conv = convs[0]["id"]
+    else:
+        # no left → create new
+        st.session_state.current_conv = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
+    st.experimental_rerun()  # safe here: Streamlit >=1.24
 
-# 7) Load and display message history
+# 6) New conversation
+if st.sidebar.button("➕ New Conversation"):
+    new_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
+    st.session_state.current_conv = new_id
+    st.experimental_rerun()
+
+# 7) Load & display history
 history = load_messages(st.session_state.current_conv)
 st.session_state.chat_history = history
 
@@ -202,7 +214,7 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 8) Handle new user input
+# 8) Handle new input
 user_input = st.chat_input("Type your message…")
 if user_input:
     add_message(st.session_state.current_conv, "user", user_input)
