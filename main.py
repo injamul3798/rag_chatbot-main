@@ -23,7 +23,6 @@ DB_FILE = "chat_history.db"
 
 # --- DATABASE UTILITIES ---
 def init_db():
-    """Create tables if they don't exist."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     c.execute("""
@@ -47,7 +46,6 @@ def init_db():
     conn.close()
 
 def load_conversations():
-    """Return all conversations ordered newest first."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     c.execute("SELECT id, title, created_at FROM conversations ORDER BY id DESC")
@@ -56,7 +54,6 @@ def load_conversations():
     return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
 
 def load_messages(conv_id):
-    """Return all messages for a given conversation_id."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     c.execute(
@@ -68,7 +65,6 @@ def load_messages(conv_id):
     return [{"role": r[0], "content": r[1], "timestamp": r[2]} for r in rows]
 
 def create_new_conversation(title):
-    """Insert a new conversation row and return its ID."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -79,7 +75,6 @@ def create_new_conversation(title):
     return conv_id
 
 def add_message(conv_id, role, content):
-    """Insert a new message."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -92,7 +87,6 @@ def add_message(conv_id, role, content):
     conn.close()
 
 def push_to_github():
-    """Commit & push the DB file—ensure creds are set in your environment."""
     os.system(f"git add {DB_FILE}")
     os.system('git commit -m "Update conversation data"')
     os.system("git push")
@@ -143,38 +137,39 @@ prompt = ChatPromptTemplate([
 st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")
 st.sidebar.title("💬 Conversations")
 
-# Load conversations from DB
+# Load conversations
 convs = load_conversations()
 options = [f"{c['id']}: {c['title']} ({c['created_at']})" for c in convs]
-if "current_conv" not in st.session_state:
-    # create a default conversation if none exist
-    if not convs:
-        new_id = create_new_conversation("My First Chat")
-        st.session_state.current_conv = new_id
-    else:
-        st.session_state.current_conv = convs[0]["id"]
 
-# Sidebar: select or create new
-sel = st.sidebar.selectbox("Select Conversation", options,
-                           index=next(i for i,c in enumerate(convs) if c["id"]==st.session_state.current_conv))
-sel_id = int(sel.split(":")[0])
+# Initialize current conversation
+if "current_conv" not in st.session_state:
+    if convs:
+        st.session_state.current_conv = convs[0]["id"]
+    else:
+        st.session_state.current_conv = create_new_conversation("Chat " + time.strftime("%H:%M:%S"))
+
+# Sidebar: select conversation
+selected = st.sidebar.selectbox(
+    "Select Conversation",
+    options,
+    index=next((i for i, c in enumerate(convs) if c["id"] == st.session_state.current_conv), 0)
+)
+sel_id = int(selected.split(":")[0])
 if sel_id != st.session_state.current_conv:
     st.session_state.current_conv = sel_id
 
+# Sidebar: create new conversation
 if st.sidebar.button("➕ New Conversation"):
-    title = f"Chat {time.strftime('%H:%M:%S')}"
-    new_id = create_new_conversation(title)
+    new_title = f"Chat {time.strftime('%H:%M:%S')}"
+    new_id = create_new_conversation(new_title)
     st.session_state.current_conv = new_id
-    # force rerun so selectbox updates
-    st.experimental_rerun()
+    # Note: no rerun call; the sidebar will update on next interaction
 
-# Load messages for the active conversation
+# Load the message history for the active conversation
 history = load_messages(st.session_state.current_conv)
-if "chat_history" not in st.session_state or st.session_state.chat_history_id != st.session_state.current_conv:
-    st.session_state.chat_history = history
-    st.session_state.chat_history_id = st.session_state.current_conv
+st.session_state.chat_history = history
 
-# Main UI
+# Main chat UI
 st.title("💬 Chat with Injamul")
 model_choice = st.selectbox("Model for responses:", [
     "llama-3.1-8b-instant",
@@ -184,25 +179,25 @@ model_choice = st.selectbox("Model for responses:", [
     "qwen-2.5-32b"
 ])
 
-# Display full history
+# Display history
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# User input
+# Handle new user input
 user_input = st.chat_input("Type your message…")
 if user_input:
-    # append & persist user message
-    st.session_state.chat_history.append({"role":"user","content":user_input})
+    # Persist user message
     add_message(st.session_state.current_conv, "user", user_input)
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Build recent context (last 5 messages)
+    # Build recent context
     recent = st.session_state.chat_history[-5:]
     prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
 
-    # Invoke LangChain + Groq
+    # Generate assistant response
     api_key = st.secrets["GROQ_API_KEY"]
     llm = ChatGroq(model=model_choice, api_key=api_key)
     doc_chain = create_stuff_documents_chain(llm, prompt)
@@ -214,35 +209,11 @@ if user_input:
     })
     answer = result["answer"].split("</think>")[-1].strip()
 
-    # append & persist assistant message
-    st.session_state.chat_history.append({"role":"assistant","content":answer})
+    # Persist assistant message
     add_message(st.session_state.current_conv, "assistant", answer)
-
+    st.session_state.chat_history.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.markdown(answer)
 
-    # push DB to GitHub
+    # (Optional) push DB to GitHub
     push_to_github()
-
-
-# --- OPTIONAL: In‑Memory Fallback (no SQLite) ---
-# If you’d rather not use SQLite at all, comment out the above DB code
-# and replace load_messages/add_message/create_new_conversation/load_conversations
-# with this simple in-memory approach:
-#
-# if "inmem" not in st.session_state:
-#     st.session_state.inmem = {"convs": [], "msgs": {}}
-# def load_conversations():
-#     return [{"id":i, "title":t, "created_at":""} for i,t in enumerate(st.session_state.inmem["convs"],1)]
-# def create_new_conversation(title):
-#     st.session_state.inmem["convs"].append(title)
-#     cid = len(st.session_state.inmem["convs"])
-#     st.session_state.inmem["msgs"][cid] = []
-#     return cid
-# def load_messages(cid):
-#     return st.session_state.inmem["msgs"].get(cid, [])
-# def add_message(cid, role, content):
-#     st.session_state.inmem["msgs"][cid].append({"role":role,"content":content})
-# def push_to_github(): pass
-#
-# That will keep everything in RAM per‐session—no persistence across restarts.
