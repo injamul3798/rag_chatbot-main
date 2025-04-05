@@ -159,45 +159,41 @@ st.sidebar.title("💬 Your Conversations")
 
 user_id = st.session_state.user_id
 
-# 1) Load this user’s conversations
+# Load this user's conversations
 convs = load_conversations(user_id)
-
-# 2) If none exist, create a first one
 if not convs:
+    # create a first conversation if none exist
     first_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
     st.session_state.current_conv = first_id
     convs = load_conversations(user_id)
 
-# 3) Build sidebar options
+# Build options for selectbox
 options = [f"{c['id']}: {c['title']} ({c['created_at']})" for c in convs]
 default_idx = next((i for i, c in enumerate(convs) if c["id"] == st.session_state.get("current_conv")), 0)
 
-# 4) Select conversation
+# Select a conversation
 selected = st.sidebar.selectbox("Select Conversation", options, index=default_idx)
 if selected:
     sel_id = int(selected.split(":")[0])
-    if sel_id != st.session_state.current_conv:
-        st.session_state.current_conv = sel_id
+    st.session_state.current_conv = sel_id
 
-# 5) Delete button
-if st.sidebar.button("🗑️ Delete Conversation"):
+# Delete button for the selected conversation
+if st.sidebar.button("🗑️ Delete Selected"):
     delete_conversation(st.session_state.current_conv)
-    # reload list
+    # reload conversations
     convs = load_conversations(user_id)
     if convs:
         st.session_state.current_conv = convs[0]["id"]
     else:
-        # no left → create new
         st.session_state.current_conv = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
-    st.experimental_rerun()  # safe here: Streamlit >=1.24
+    # no rerun call needed; Streamlit will re-execute on button click
 
-# 6) New conversation
+# New conversation button
 if st.sidebar.button("➕ New Conversation"):
     new_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
     st.session_state.current_conv = new_id
-    st.experimental_rerun()
 
-# 7) Load & display history
+# Load & display history
 history = load_messages(st.session_state.current_conv)
 st.session_state.chat_history = history
 
@@ -214,7 +210,7 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 8) Handle new input
+# Handle new user input
 user_input = st.chat_input("Type your message…")
 if user_input:
     add_message(st.session_state.current_conv, "user", user_input)
