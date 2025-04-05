@@ -23,7 +23,7 @@ DB_FILE = "chat_history.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Create table for conversation sessions
+    # Table for conversation sessions
     c.execute("""
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +31,7 @@ def init_db():
             created_at TEXT
         )
     """)
-    # Create table for messages linked to a conversation session
+    # Table for messages linked to a conversation session
     c.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +83,7 @@ def add_message(conversation_id, role, content):
     conn.close()
 
 def push_to_github():
-    # Assumes the local repository is set up and credentials are configured.
+    # Ensure your local repository is set up with credentials/config for automated pushes.
     os.system("git add " + DB_FILE)
     os.system('git commit -m "Update conversation data"')
     os.system("git push")
@@ -104,11 +104,11 @@ embedding = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L
 vector_store = FAISS.from_documents(documents, embedding)
 retriever = vector_store.as_retriever()
 
-# === Prompt Template (includes previous conversation context) ===
+# === Prompt Template (with conversation context) ===
 prompt = ChatPromptTemplate([
     """
     You have to act like Injamul. Your bio is provided in the context.
-    Answer questions only based on the provided context and the previous conversation.
+    Answer questions based only on the provided context and previous conversation.
     
     <previous_conversation>
     {previous_conversation}
@@ -130,46 +130,44 @@ if "current_conversation_id" not in st.session_state:
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = load_messages(st.session_state.current_conversation_id)
 
-# === Sidebar: Conversation Sessions & New Conversation Button ===
-st.sidebar.header("Conversations")
-
-# List all conversation sessions with clickable expanders
+# === Sidebar: Conversation Sessions List (ChatGPT-like) ===
+st.sidebar.title("ChatGPT Conversations")
 conversations = load_conversations()
-selected_conv = st.sidebar.radio(
-    "Select a conversation",
-    options=[f"{conv['title']} ({conv['created_at']})" for conv in conversations]
-)
-
-# Find selected conversation id
+conversation_options = []
 for conv in conversations:
-    conv_display = f"{conv['title']} ({conv['created_at']})"
-    if conv_display == selected_conv:
-        selected_conv_id = conv["id"]
+    # Format: id: Title (Created_at)
+    conversation_options.append(f"{conv['id']}: {conv['title']} ({conv['created_at']})")
+
+# Use a selectbox for clickable sessions; default selection is the current conversation
+default_idx = 0
+for idx, conv in enumerate(conversations):
+    if conv["id"] == st.session_state.current_conversation_id:
+        default_idx = idx
         break
 
-# Button to load the selected conversation
-if st.sidebar.button("Load Conversation"):
+selected_conv = st.sidebar.selectbox("Select Conversation", conversation_options, index=default_idx)
+
+# When a new session is selected, load its messages
+selected_conv_id = int(selected_conv.split(":")[0])
+if selected_conv_id != st.session_state.current_conversation_id:
     st.session_state.current_conversation_id = selected_conv_id
     st.session_state.chat_messages = load_messages(selected_conv_id)
+    st.experimental_rerun()
 
-st.sidebar.markdown("---")
 # Button to start a new conversation
 if st.sidebar.button("New Conversation"):
-    # Optional: ask for a title
     new_title = st.sidebar.text_input("Enter conversation title", value="New Conversation " + time.strftime("%H:%M:%S"))
+    # Create a new conversation and update session state
     new_conv_id = create_new_conversation(new_title)
     st.session_state.current_conversation_id = new_conv_id
-    st.session_state.chat_messages = []  # Reset for new conversation
-
-# Show a list of messages (clickable expanders) for the current conversation in the sidebar.
-with st.sidebar.expander("Current Conversation Details", expanded=True):
-    for msg in st.session_state.chat_messages:
-        preview = msg["content"][:50] + ("..." if len(msg["content"]) > 50 else "")
-        st.markdown(f"**{msg['role'].capitalize()}**: {preview}")
+    st.session_state.chat_messages = []
+    st.experimental_rerun()
 
 # === Main Chat UI ===
 st.title("💬 Chat with Injamul")
-model_choice = st.sidebar.selectbox(
+
+# Place model selection above the chat history in the main area
+model_choice = st.selectbox(
     "Select a model for responses:",
     [
       "llama-3.1-8b-instant",
@@ -180,7 +178,7 @@ model_choice = st.sidebar.selectbox(
     ]
 )
 
-# Display the full conversation in the main area
+# Display the full conversation in the main chat window
 for msg in st.session_state.chat_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -188,13 +186,13 @@ for msg in st.session_state.chat_messages:
 # === Chat Input & Processing ===
 input_query = st.chat_input("Type your message…")
 if input_query:
-    # Save user message
+    # Append user message to session state and save in DB
     st.session_state.chat_messages.append({"role": "user", "content": input_query, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     add_message(st.session_state.current_conversation_id, "user", input_query)
     with st.chat_message("user"):
         st.markdown(input_query)
 
-    # Build previous conversation context (using last few messages)
+    # Build previous conversation context (using last 5 messages)
     recent = st.session_state.chat_messages[-5:]
     previous_context = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in recent])
     
@@ -202,7 +200,7 @@ if input_query:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
     llm = ChatGroq(model=model_choice, api_key=GROQ_API_KEY)
     
-    # Build retrieval chain (including context from PDF)
+    # Build retrieval chain (with context from the PDF)
     doc_chain = create_stuff_documents_chain(llm, prompt)
     retrieval_chain = create_retrieval_chain(retriever, doc_chain)
     
@@ -213,11 +211,11 @@ if input_query:
     })
     answer = result["answer"].split("</think>")[-1].strip()
     
-    # Save assistant message
+    # Append assistant message to session state and save in DB
     st.session_state.chat_messages.append({"role": "assistant", "content": answer, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     add_message(st.session_state.current_conversation_id, "assistant", answer)
     with st.chat_message("assistant"):
         st.markdown(answer)
 
-    # Optionally push changes to GitHub after each conversation update
+    # Optionally push changes to GitHub after conversation update
     push_to_github()
