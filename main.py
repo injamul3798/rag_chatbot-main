@@ -190,7 +190,7 @@ if st.sidebar.button("🗑️ Delete Selected"):
 
 # New conversation button
 if st.sidebar.button("➕ New Conversation"):
-    new_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
+    new_id = create_new_conversation("Chat " + time.strftime("%H:%M:%S"))
     st.session_state.current_conv = new_id
 
 # Load & display history
