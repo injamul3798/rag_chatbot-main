@@ -1,5 +1,3 @@
-# main.py
-
 import os
 import time
 import uuid
@@ -8,9 +6,6 @@ from datetime import datetime
 
 import streamlit as st
 from dotenv import load_dotenv
-
-# Fix for missing init_empty_weights in Transformers v5+
-from transformers.utils import no_init_weights, init_empty_weights
 
 # LangChain imports
 from langchain_community.document_loaders import PyPDFLoader
@@ -25,6 +20,7 @@ from langchain.docstore.document import Document
 
 load_dotenv()
 DB_FILE = "chat_history.db"
+
 
 # --- DATABASE UTILITIES ---
 def init_db():
@@ -184,11 +180,13 @@ if selected:
 # Delete button for the selected conversation
 if st.sidebar.button("🗑️ Delete Selected"):
     delete_conversation(st.session_state.current_conv)
+    # reload conversations
     convs = load_conversations(user_id)
     if convs:
         st.session_state.current_conv = convs[0]["id"]
     else:
         st.session_state.current_conv = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
+    # no rerun call needed; Streamlit will re-execute on button click
 
 # New conversation button
 if st.sidebar.button("➕ New Conversation"):
@@ -239,3 +237,5 @@ if user_input:
         st.markdown(answer)
 
     push_to_github()
+
+
