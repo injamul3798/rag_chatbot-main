@@ -21,7 +21,6 @@ from langchain.docstore.document import Document
 load_dotenv()
 DB_FILE = "chat_history.db"
 
-
 # --- DATABASE UTILITIES ---
 def init_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -57,9 +56,12 @@ def load_conversations(user_id):
     )
     rows = c.fetchall()
     conn.close()
+    # Return conversation details; no need to include ID in the displayed title.
     return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
 
-def create_new_conversation(user_id, title):
+def create_new_conversation(user_id, title=None):
+    if not title:
+        title = "Untitled Chat"
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -115,7 +117,6 @@ init_db()
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 
-
 # --- VECTOR STORE SETUP ---
 @st.cache_resource
 def build_retriever():
@@ -131,7 +132,6 @@ def build_retriever():
     return store.as_retriever(), documents
 
 retriever, all_docs = build_retriever()
-
 
 # --- PROMPT TEMPLATE ---
 prompt = ChatPromptTemplate([
@@ -152,6 +152,33 @@ prompt = ChatPromptTemplate([
     """
 ])
 
+# --- CUSTOM STYLES ---
+st.markdown("""
+    <style>
+        .block-container {
+            padding-top: 1rem;
+        }
+        .stSidebar {
+            background-color: #111;
+            color: #ccc;
+        }
+        .chat-title {
+            padding: 8px 10px;
+            background: #333;
+            border-radius: 6px;
+            margin-bottom: 5px;
+        }
+        .chat-title button {
+            background: none;
+            border: none;
+            color: white;
+            font-weight: bold;
+            width: 100%;
+            text-align: left;
+            cursor: pointer;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 # --- STREAMLIT UI & LOGIC ---
 st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")
@@ -159,41 +186,40 @@ st.sidebar.title("💬 Your Conversations")
 
 user_id = st.session_state.user_id
 
-# Load this user's conversations
+# Load user's conversations
 convs = load_conversations(user_id)
 if not convs:
-    # create a first conversation if none exist
+    # Create a first conversation if none exist
     first_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
     st.session_state.current_conv = first_id
     convs = load_conversations(user_id)
 
-# Build options for selectbox
-options = [f"{c['id']}: {c['title']} ({c['created_at']})" for c in convs]
-default_idx = next((i for i, c in enumerate(convs) if c["id"] == st.session_state.get("current_conv")), 0)
+# Sidebar - Conversation list using buttons
+st.sidebar.markdown("### Conversations")
+for conv in convs:
+    # Display title and creation time; omit conversation ID.
+    chat_display = f"{conv['title']} ({conv['created_at']})"
+    if st.sidebar.button(chat_display, key=f"conv_{conv['id']}"):
+        st.session_state.current_conv = conv['id']
 
-# Select a conversation
-selected = st.sidebar.selectbox("Select Conversation", options, index=default_idx)
-if selected:
-    sel_id = int(selected.split(":")[0])
-    st.session_state.current_conv = sel_id
-
-# Delete button for the selected conversation
-if st.sidebar.button("🗑️ Delete Selected"):
+# Option to delete the currently selected conversation
+if st.sidebar.button("🗑️ Delete Selected Conversation"):
     delete_conversation(st.session_state.current_conv)
-    # reload conversations
     convs = load_conversations(user_id)
     if convs:
         st.session_state.current_conv = convs[0]["id"]
     else:
         st.session_state.current_conv = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
-    # no rerun call needed; Streamlit will re-execute on button click
 
-# New conversation button
-if st.sidebar.button("➕ New Conversation"):
-    new_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
-    st.session_state.current_conv = new_id
+# Sidebar - New Conversation with custom title
+with st.sidebar.expander("➕ New Conversation"):
+    custom_title = st.text_input("Enter chat title", key="new_chat_title")
+    if st.button("Create Chat", key="create_new_conv"):
+        new_title = custom_title.strip() if custom_title.strip() else "Chat " + time.strftime("%H:%M:%S")
+        new_id = create_new_conversation(user_id, new_title)
+        st.session_state.current_conv = new_id
 
-# Load & display history
+# Load & display chat history
 history = load_messages(st.session_state.current_conv)
 st.session_state.chat_history = history
 
@@ -206,6 +232,7 @@ model_choice = st.selectbox("Model for responses:", [
     "qwen-2.5-32b"
 ])
 
+# Display chat messages in the main area
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -213,14 +240,17 @@ for msg in st.session_state.chat_history:
 # Handle new user input
 user_input = st.chat_input("Type your message…")
 if user_input:
+    # Save user message
     add_message(st.session_state.current_conv, "user", user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
+    # Build previous conversation context using the last 5 messages
     recent = st.session_state.chat_history[-5:]
     prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
 
+    # Call the model via ChatGroq
     llm = ChatGroq(model=model_choice, api_key=st.secrets["GROQ_API_KEY"])
     doc_chain = create_stuff_documents_chain(llm, prompt)
     chain = create_retrieval_chain(retriever, doc_chain)
@@ -231,11 +261,11 @@ if user_input:
     })
     answer = result["answer"].split("</think>")[-1].strip()
 
+    # Save the assistant response
     add_message(st.session_state.current_conv, "assistant", answer)
     st.session_state.chat_history.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.markdown(answer)
 
+    # Optionally push updates to GitHub
     push_to_github()
-
-
