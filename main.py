@@ -2,7 +2,7 @@ import os
 import time
 import uuid
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import streamlit as st
 st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")  # Must be at the very top
@@ -22,6 +22,16 @@ from langchain.docstore.document import Document
 
 load_dotenv()
 DB_FILE = "chat_history.db"
+
+# --- Helper function for current time with +6hr offset ---
+def current_time():
+    return datetime.now() + timedelta(hours=6)
+
+def current_time_str(fmt="%Y-%m-%d %H:%M:%S"):
+    return current_time().strftime(fmt)
+
+def current_time_short():
+    return current_time().strftime("%H:%M:%S")
 
 # --- DATABASE UTILITIES ---
 def init_db():
@@ -64,7 +74,7 @@ def create_new_conversation(user_id, title=None):
         title = "Untitled Chat"
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = current_time_str()
     c.execute(
         "INSERT INTO conversations (user_id, title, created_at) VALUES (?, ?, ?)",
         (user_id, title, now)
@@ -96,7 +106,7 @@ def load_messages(conv_id):
 def add_message(conv_id, role, content):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = current_time_str()
     c.execute(
         "INSERT INTO chat_messages (conversation_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
         (conv_id, role, content, now)
@@ -150,13 +160,14 @@ prompt = ChatPromptTemplate([
 ])
 
 # --- STREAMLIT UI & LOGIC ---
-st.sidebar.title("")  # Remove additional sidebar headings
+# Remove additional sidebar title and headings for simplicity
+st.sidebar.title("")
 user_id = st.session_state.user_id
 
 # Load user's conversations
 convs = load_conversations(user_id)
 if not convs:
-    first_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
+    first_id = create_new_conversation(user_id, "Chat " + current_time_short())
     st.session_state.current_conv = first_id
     convs = load_conversations(user_id)
 
@@ -165,7 +176,8 @@ def shorten_title(title, max_length=30):
     return title if len(title) <= max_length else title[:max_length-3] + "..."
 
 # Sidebar - Conversation list using a selectbox displaying only titles
-conversation_options = {conv["title"]: conv["id"] for conv in convs}
+# Use shortened titles for display (if needed)
+conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
 selected_title = st.sidebar.selectbox("Conversations", list(conversation_options.keys()))
 st.session_state.current_conv = conversation_options[selected_title]
 
@@ -176,19 +188,18 @@ if st.sidebar.button("🗑️ Delete Selected"):
     if convs:
         st.session_state.current_conv = convs[0]["id"]
     else:
-        st.session_state.current_conv = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
-    # refresh the conversation options
+        st.session_state.current_conv = create_new_conversation(user_id, "Chat " + current_time_short())
     conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
 
-# Sidebar - New Conversation with custom title
+# Sidebar - New Conversation with custom title in an expander
 with st.sidebar.expander("➕ New Conversation"):
     custom_title = st.text_input("Enter chat title", key="new_chat_title")
     if st.button("Create Chat", key="create_new_conv"):
-        new_title = custom_title.strip() if custom_title.strip() else "Chat " + time.strftime("%H:%M:%S")
+        new_title = custom_title.strip() if custom_title.strip() else "Chat " + current_time_short()
         new_id = create_new_conversation(user_id, new_title)
         st.session_state.current_conv = new_id
 
-# Load & display chat history
+# Load & display chat history for the selected conversation
 history = load_messages(st.session_state.current_conv)
 st.session_state.chat_history = history
 
@@ -218,7 +229,7 @@ if user_input:
     recent = st.session_state.chat_history[-5:]
     prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
 
-    # Generate answer from the model
+    # Generate answer from the model using ChatGroq
     llm = ChatGroq(model=model_choice, api_key=st.secrets["GROQ_API_KEY"])
     doc_chain = create_stuff_documents_chain(llm, prompt)
     chain = create_retrieval_chain(retriever, doc_chain)
