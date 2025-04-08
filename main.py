@@ -5,6 +5,8 @@ import sqlite3
 from datetime import datetime
 
 import streamlit as st
+st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")  # Must be at the very top
+
 from dotenv import load_dotenv
 
 # LangChain imports
@@ -56,7 +58,7 @@ def load_conversations(user_id):
     )
     rows = c.fetchall()
     conn.close()
-    # Return conversation details; no need to include ID in the displayed title.
+    # Return conversation details; no need to display the conversation ID.
     return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
 
 def create_new_conversation(user_id, title=None):
@@ -181,9 +183,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- STREAMLIT UI & LOGIC ---
-st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")
 st.sidebar.title("💬 Your Conversations")
-
 user_id = st.session_state.user_id
 
 # Load user's conversations
@@ -197,7 +197,7 @@ if not convs:
 # Sidebar - Conversation list using buttons
 st.sidebar.markdown("### Conversations")
 for conv in convs:
-    # Display title and creation time; omit conversation ID.
+    # Display the title and creation time; omit conversation ID.
     chat_display = f"{conv['title']} ({conv['created_at']})"
     if st.sidebar.button(chat_display, key=f"conv_{conv['id']}"):
         st.session_state.current_conv = conv['id']
