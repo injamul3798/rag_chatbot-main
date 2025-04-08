@@ -52,13 +52,11 @@ def load_conversations(user_id):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     c.execute(
-        "SELECT id, title, created_at FROM conversations "
-        "WHERE user_id = ? ORDER BY id DESC",
+        "SELECT id, title, created_at FROM conversations WHERE user_id = ? ORDER BY id DESC",
         (user_id,)
     )
     rows = c.fetchall()
     conn.close()
-    # Return conversation details; no need to display the conversation ID.
     return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
 
 def create_new_conversation(user_id, title=None):
@@ -88,8 +86,7 @@ def load_messages(conv_id):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     c.execute(
-        "SELECT role, content, timestamp FROM chat_messages "
-        "WHERE conversation_id = ? ORDER BY id ASC",
+        "SELECT role, content, timestamp FROM chat_messages WHERE conversation_id = ? ORDER BY id ASC",
         (conv_id,)
     )
     rows = c.fetchall()
@@ -101,8 +98,7 @@ def add_message(conv_id, role, content):
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c.execute(
-        "INSERT INTO chat_messages (conversation_id, role, content, timestamp) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO chat_messages (conversation_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
         (conv_id, role, content, now)
     )
     conn.commit()
@@ -112,7 +108,6 @@ def push_to_github():
     os.system(f"git add {DB_FILE}")
     os.system('git commit -m "Update conversation data"')
     os.system("git push")
-
 
 # --- INITIALIZE & IDENTIFY USER ---
 init_db()
@@ -157,27 +152,38 @@ prompt = ChatPromptTemplate([
 # --- CUSTOM STYLES ---
 st.markdown("""
     <style>
+        /* Overall container styling */
         .block-container {
             padding-top: 1rem;
         }
-        .stSidebar {
-            background-color: #111;
-            color: #ccc;
+        /* Sidebar styling */
+        .css-1d391kg {  
+            background-color: #000000;  /* make the sidebar black */
         }
+        .stSidebar {  
+            background-color: #000000;  
+            color: #ffffff;
+        }
+        /* Conversation button style */
         .chat-title {
             padding: 8px 10px;
-            background: #333;
+            background: #222;  
+            border: 1px solid #ffffff;
             border-radius: 6px;
             margin-bottom: 5px;
         }
         .chat-title button {
             background: none;
             border: none;
-            color: white;
+            color: #ffffff;
             font-weight: bold;
             width: 100%;
             text-align: left;
             cursor: pointer;
+        }
+        /* Expander title style */
+        .css-1lsmgbg {  
+            color: #ffffff;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -194,12 +200,13 @@ if not convs:
     st.session_state.current_conv = first_id
     convs = load_conversations(user_id)
 
-# Sidebar - Conversation list using buttons
+# Sidebar - Conversation list using buttons with updated style
 st.sidebar.markdown("### Conversations")
 for conv in convs:
-    # Display the title and creation time; omit conversation ID.
     chat_display = f"{conv['title']} ({conv['created_at']})"
-    if st.sidebar.button(chat_display, key=f"conv_{conv['id']}"):
+    # Wrap each conversation button in a custom styled container
+    if st.sidebar.button(chat_display, key=f"conv_{conv['id']}", help="Click to load conversation", 
+                           on_click=lambda c=conv['id']: st.session_state.update({"current_conv": c})):
         st.session_state.current_conv = conv['id']
 
 # Option to delete the currently selected conversation
@@ -211,7 +218,7 @@ if st.sidebar.button("🗑️ Delete Selected Conversation"):
     else:
         st.session_state.current_conv = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
 
-# Sidebar - New Conversation with custom title
+# Sidebar - New Conversation with custom title in an expander
 with st.sidebar.expander("➕ New Conversation"):
     custom_title = st.text_input("Enter chat title", key="new_chat_title")
     if st.button("Create Chat", key="create_new_conv"):
@@ -240,13 +247,12 @@ for msg in st.session_state.chat_history:
 # Handle new user input
 user_input = st.chat_input("Type your message…")
 if user_input:
-    # Save user message
     add_message(st.session_state.current_conv, "user", user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Build previous conversation context using the last 5 messages
+    # Build context from the last 5 messages
     recent = st.session_state.chat_history[-5:]
     prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
 
@@ -261,11 +267,9 @@ if user_input:
     })
     answer = result["answer"].split("</think>")[-1].strip()
 
-    # Save the assistant response
     add_message(st.session_state.current_conv, "assistant", answer)
     st.session_state.chat_history.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.markdown(answer)
 
-    # Optionally push updates to GitHub
     push_to_github()
