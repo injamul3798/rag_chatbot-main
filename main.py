@@ -52,12 +52,12 @@ def load_conversations(user_id):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     c.execute(
-        "SELECT id, title, created_at FROM conversations WHERE user_id = ? ORDER BY id DESC",
+        "SELECT id, title FROM conversations WHERE user_id = ? ORDER BY id DESC",
         (user_id,)
     )
     rows = c.fetchall()
     conn.close()
-    return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
+    return [{"id": r[0], "title": r[1]} for r in rows]
 
 def create_new_conversation(user_id, title=None):
     if not title:
@@ -149,76 +149,38 @@ prompt = ChatPromptTemplate([
     """
 ])
 
-# --- CUSTOM STYLES ---
-st.markdown("""
-    <style>
-        /* Overall container styling */
-        .block-container {
-            padding-top: 1rem;
-        }
-        /* Sidebar styling */
-        .css-1d391kg {  
-            background-color: #000000;  /* make the sidebar black */
-        }
-        .stSidebar {  
-            background-color: #000000;  
-            color: #ffffff;
-        }
-        /* Conversation button style */
-        .chat-title {
-            padding: 8px 10px;
-            background: #222;  
-            border: 1px solid #ffffff;
-            border-radius: 6px;
-            margin-bottom: 5px;
-        }
-        .chat-title button {
-            background: none;
-            border: none;
-            color: #ffffff;
-            font-weight: bold;
-            width: 100%;
-            text-align: left;
-            cursor: pointer;
-        }
-        /* Expander title style */
-        .css-1lsmgbg {  
-            color: #ffffff;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
 # --- STREAMLIT UI & LOGIC ---
-st.sidebar.title("💬 Your Conversations")
+st.sidebar.title("")  # Remove additional sidebar headings
 user_id = st.session_state.user_id
 
 # Load user's conversations
 convs = load_conversations(user_id)
 if not convs:
-    # Create a first conversation if none exist
     first_id = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
     st.session_state.current_conv = first_id
     convs = load_conversations(user_id)
 
-# Sidebar - Conversation list using buttons with updated style
-st.sidebar.markdown("### Conversations")
-for conv in convs:
-    chat_display = f"{conv['title']} ({conv['created_at']})"
-    # Wrap each conversation button in a custom styled container
-    if st.sidebar.button(chat_display, key=f"conv_{conv['id']}", help="Click to load conversation", 
-                           on_click=lambda c=conv['id']: st.session_state.update({"current_conv": c})):
-        st.session_state.current_conv = conv['id']
+# Function to shorten long titles to a maximum length
+def shorten_title(title, max_length=30):
+    return title if len(title) <= max_length else title[:max_length-3] + "..."
+
+# Sidebar - Conversation list using a selectbox displaying only titles
+conversation_options = {conv["title"]: conv["id"] for conv in convs}
+selected_title = st.sidebar.selectbox("Conversations", list(conversation_options.keys()))
+st.session_state.current_conv = conversation_options[selected_title]
 
 # Option to delete the currently selected conversation
-if st.sidebar.button("🗑️ Delete Selected Conversation"):
+if st.sidebar.button("🗑️ Delete Selected"):
     delete_conversation(st.session_state.current_conv)
     convs = load_conversations(user_id)
     if convs:
         st.session_state.current_conv = convs[0]["id"]
     else:
         st.session_state.current_conv = create_new_conversation(user_id, "Chat " + time.strftime("%H:%M:%S"))
+    # refresh the conversation options
+    conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
 
-# Sidebar - New Conversation with custom title in an expander
+# Sidebar - New Conversation with custom title
 with st.sidebar.expander("➕ New Conversation"):
     custom_title = st.text_input("Enter chat title", key="new_chat_title")
     if st.button("Create Chat", key="create_new_conv"):
@@ -252,11 +214,11 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Build context from the last 5 messages
+    # Build previous conversation context from the last 5 messages
     recent = st.session_state.chat_history[-5:]
     prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
 
-    # Call the model via ChatGroq
+    # Generate answer from the model
     llm = ChatGroq(model=model_choice, api_key=st.secrets["GROQ_API_KEY"])
     doc_chain = create_stuff_documents_chain(llm, prompt)
     chain = create_retrieval_chain(retriever, doc_chain)
