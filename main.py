@@ -209,7 +209,8 @@ model_choice = st.selectbox("Model for responses:", [
     "gemma2-9b-it",
     "deepseek-r1-distill-llama-70b",
     "deepseek-r1-distill-qwen-32b",
-    "qwen-2.5-32b"
+    "qwen-2.5-32b",
+    "whisper-large-v3",
 ])
 
 # Display chat messages in the main area
