@@ -8,7 +8,6 @@ import streamlit as st
 st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")  # Must be at the very top
 
 from dotenv import load_dotenv
-load_dotenv()
 
 # LangChain imports
 from langchain_community.document_loaders import PyPDFLoader
@@ -21,6 +20,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
 from langchain.docstore.document import Document
 
+load_dotenv()
 DB_FILE = "chat_history.db"
 
 # --- Helper function for current time with +6hr offset ---
@@ -125,7 +125,7 @@ if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 
 # --- VECTOR STORE SETUP ---
-@st.cache_resource(show_spinner=False)
+@st.cache_resource
 def build_retriever():
     loader = PyPDFLoader("who_am_I.pdf")
     docs = loader.load()
@@ -160,27 +160,28 @@ prompt = ChatPromptTemplate([
 ])
 
 # --- STREAMLIT UI & LOGIC ---
-# Sidebar design: ChatGPT-inspired interface
-
-st.sidebar.markdown("# 💬 Chat with Injamul")
-st.sidebar.markdown("A smart and friendly conversation powered by advanced AI/ML.")
-st.sidebar.markdown("---")
-
-# Sidebar: Conversation list with ChatGPT–like design
+# Remove additional sidebar title and headings for simplicity
+st.sidebar.title("")
 user_id = st.session_state.user_id
+
+# Load user's conversations
 convs = load_conversations(user_id)
 if not convs:
     first_id = create_new_conversation(user_id, "Chat " + current_time_short())
     st.session_state.current_conv = first_id
     convs = load_conversations(user_id)
 
+# Function to shorten long titles to a maximum length
 def shorten_title(title, max_length=30):
     return title if len(title) <= max_length else title[:max_length-3] + "..."
 
+# Sidebar - Conversation list using a selectbox displaying only titles
+# Use shortened titles for display (if needed)
 conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
 selected_title = st.sidebar.selectbox("Conversations", list(conversation_options.keys()))
 st.session_state.current_conv = conversation_options[selected_title]
 
+# Option to delete the currently selected conversation
 if st.sidebar.button("🗑️ Delete Selected"):
     delete_conversation(st.session_state.current_conv)
     convs = load_conversations(user_id)
@@ -190,6 +191,7 @@ if st.sidebar.button("🗑️ Delete Selected"):
         st.session_state.current_conv = create_new_conversation(user_id, "Chat " + current_time_short())
     conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
 
+# Sidebar - New Conversation with custom title in an expander
 with st.sidebar.expander("➕ New Conversation"):
     custom_title = st.text_input("Enter chat title", key="new_chat_title")
     if st.button("Create Chat", key="create_new_conv"):
@@ -197,9 +199,12 @@ with st.sidebar.expander("➕ New Conversation"):
         new_id = create_new_conversation(user_id, new_title)
         st.session_state.current_conv = new_id
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Select Model for Responses")
-model_choice = st.sidebar.selectbox("", [
+# Load & display chat history for the selected conversation
+history = load_messages(st.session_state.current_conv)
+st.session_state.chat_history = history
+
+st.title("💬 Chat with Injamul")
+model_choice = st.selectbox("Model for responses:", [
     "llama-3.1-8b-instant",
     "gemma2-9b-it",
     "deepseek-r1-distill-llama-70b",
@@ -207,49 +212,25 @@ model_choice = st.sidebar.selectbox("", [
     "qwen-2.5-32b",
     "whisper-large-v3",
 ])
-st.sidebar.markdown("---")
 
-st.sidebar.markdown("### About Injamul")
-st.sidebar.markdown("""
-**Md. Injamul Haque**  
-_Software Engineer specializing in AI/ML and Python development_  
-Expert in real-time ML applications in healthcare and computer vision.
-
-**Email:** [injamulhaque9117@gmail.com](mailto:injamulhaque9117@gmail.com)  
-**Phone:** 01745-449117  
-**GitHub:** [github.com/injamul3798](https://github.com/injamul3798)  
-**LinkedIn:** [linkedin.com/in/injamul-haque21/](https://www.linkedin.com/in/injamul-haque21/)
-""")
-st.sidebar.markdown("---")
-st.sidebar.markdown("Click in the main area to start chatting!")
-
-# Load chat history for the selected conversation
-history = load_messages(st.session_state.current_conv)
-st.session_state.chat_history = history
-
-# Main chat area header
-st.title("💬 Chat with Injamul")
-st.markdown("### Enjoy your conversation below")
-
-# Display chat messages in the main area with ChatGPT–like bubbles
+# Display chat messages in the main area
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Handle user input via the chat input box
+# Handle new user input
 user_input = st.chat_input("Type your message…")
 if user_input:
-    # Save and display user's message
     add_message(st.session_state.current_conv, "user", user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Build previous conversation context from the last 5 messages for continuity
+    # Build previous conversation context from the last 5 messages
     recent = st.session_state.chat_history[-5:]
     prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
 
-    # Generate answer from the model using ChatGroq and LangChain
+    # Generate answer from the model using ChatGroq
     llm = ChatGroq(model=model_choice, api_key=st.secrets["GROQ_API_KEY"])
     doc_chain = create_stuff_documents_chain(llm, prompt)
     chain = create_retrieval_chain(retriever, doc_chain)
