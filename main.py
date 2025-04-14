@@ -2,17 +2,16 @@ import os
 import time
 import uuid
 import sqlite3
-import io
 from datetime import datetime, timedelta
-from PIL import Image
 
 import streamlit as st
 st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")  # Must be at the very top
 
 from dotenv import load_dotenv
 
-# LangChain and other imports remain the same...
-from langchain_community.document_loaders import PyPDFLoader
+# LangChain imports
+from langchain_community.document_loaders import PyPDFLoader  # For PDFs
+# You might add other loaders if you wish to support additional file types, e.g., TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -126,44 +125,37 @@ init_db()
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 
-# --- VECTOR STORE SETUP ---
-@st.cache_resource
-def build_retriever():
-    loader = PyPDFLoader("who_am_I.pdf")
-    docs = loader.load()
-    text = "\n".join(d.page_content for d in docs)
-    splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=20)
-    chunks = splitter.split_text(text)
-    documents = [Document(page_content=chunk) for chunk in chunks]
-
-    embed = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    store = FAISS.from_documents(documents, embed)
-    return store.as_retriever(), documents
-
-retriever, all_docs = build_retriever()
-
-# --- PROMPT TEMPLATE ---
-prompt = ChatPromptTemplate([
+# --- FUNCTIONS FOR PROCESSING UPLOADED FILES ---
+def process_uploaded_file(uploaded_file):
     """
-    You have to act like Injamul. Your bio is provided in the context.
-    Answer questions based only on the provided context and previous conversation.
-
-    <previous_conversation>
-    {previous_conversation}
-    <previous_conversation>
-
-    <context>
-    {context}
-    <context>
-
-    Question: {input}
-    Answer:
+    Processes an uploaded file (PDF or text) and returns its content as a string.
+    Extend this function to support additional file types if needed.
     """
-])
+    if uploaded_file is not None:
+        file_type = uploaded_file.type
+        # Example: If it's a PDF, use PyPDFLoader (you could also support txt files directly)
+        if file_type == "application/pdf":
+            # If you are loading from an in-memory file, you might need to pass the stream
+            loader = PyPDFLoader(uploaded_file)
+            docs = loader.load()
+            content = "\n".join(d.page_content for d in docs)
+            return content
+        elif file_type.startswith("text"):
+            # For text files, decode to a string (assuming UTF-8)
+            return uploaded_file.read().decode("utf-8")
+    return None
 
-# --- STREAMLIT SIDEBAR & CHAT UI ---
+# --- SIDE BAR: Conversation and File Upload Section ---
 st.sidebar.title("")
 user_id = st.session_state.user_id
+
+# File upload option in the sidebar (or you may place it in the main area)
+uploaded_file = st.sidebar.file_uploader("Upload a file for context (PDF or TXT)", type=["pdf", "txt"])
+# Process file if uploaded; else you can fall back to default file or no file context
+uploaded_file_text = process_uploaded_file(uploaded_file)
+# Optionally show a message confirming file upload
+if uploaded_file_text:
+    st.sidebar.success("File uploaded successfully!")
 
 # Load user's conversations
 convs = load_conversations(user_id)
@@ -175,6 +167,7 @@ if not convs:
 def shorten_title(title, max_length=30):
     return title if len(title) <= max_length else title[:max_length-3] + "..."
 
+# Sidebar - Conversation list
 conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
 selected_title = st.sidebar.selectbox("Conversations", list(conversation_options.keys()))
 st.session_state.current_conv = conversation_options[selected_title]
@@ -195,9 +188,49 @@ with st.sidebar.expander("➕ New Conversation"):
         new_id = create_new_conversation(user_id, new_title)
         st.session_state.current_conv = new_id
 
-history = load_messages(st.session_state.current_conv)
-st.session_state.chat_history = history
+# --- VECTOR STORE SETUP --- 
+# Here, we build the retriever using either the uploaded file or a default file
+@st.cache_resource
+def build_retriever(file_text):
+    # If file_text is provided from the uploader, use it as context
+    if file_text:
+        text = file_text
+    else:
+        # Fall back to a default file (e.g., "who_am_I.pdf") if no upload is given
+        with open("who_am_I.pdf", "rb") as f:
+            loader = PyPDFLoader(f)
+            docs = loader.load()
+            text = "\n".join(d.page_content for d in docs)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=20)
+    chunks = splitter.split_text(text)
+    documents = [Document(page_content=chunk) for chunk in chunks]
+    
+    embed = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    store = FAISS.from_documents(documents, embed)
+    return store.as_retriever(), documents
 
+retriever, all_docs = build_retriever(uploaded_file_text)
+
+# --- PROMPT TEMPLATE ---
+prompt = ChatPromptTemplate([
+    """
+    You have to act like Injamul. Your bio is provided in the context.
+    Answer questions based only on the provided context and previous conversation.
+
+    <previous_conversation>
+    {previous_conversation}
+    <previous_conversation>
+
+    <context>
+    {context}
+    <context>
+
+    Question: {input}
+    Answer:
+    """
+])
+
+# --- MAIN AREA: Chat Display ---
 st.title("💬 Chat with Injamul")
 model_choice = st.selectbox("Model for responses:", [
     "llama-3.1-8b-instant",
@@ -208,61 +241,36 @@ model_choice = st.selectbox("Model for responses:", [
     "whisper-large-v3",
 ])
 
-# --- FILE, IMAGE, AND VOICE UPLOAD SECTION ---
-st.subheader("Additional Upload Options")
-# PDF / File Upload Section
-uploaded_pdf = st.file_uploader("Upload PDF File", type=["pdf"])
-if uploaded_pdf is not None:
-    # Save the file temporarily
-    pdf_path = f"temp_{uploaded_pdf.name}"
-    with open(pdf_path, "wb") as f:
-        f.write(uploaded_pdf.getbuffer())
-    st.success(f"PDF file '{uploaded_pdf.name}' uploaded!")
-    # If needed, process the PDF file using your PyPDFLoader:
-    loader = PyPDFLoader(pdf_path)
-    new_docs = loader.load()
-    st.write(f"Loaded {len(new_docs)} pages from the PDF.")
+# Load & display chat history for the selected conversation
+history = load_messages(st.session_state.current_conv)
+st.session_state.chat_history = history
 
-# Image Upload Section
-uploaded_image = st.file_uploader("Upload an Image", type=["png", "jpg", "jpeg"], key="image")
-if uploaded_image is not None:
-    image = Image.open(uploaded_image)
-    st.image(image, caption="Uploaded Image", use_column_width=True)
-
-# Voice / Audio Upload Section
-uploaded_audio = st.file_uploader("Upload an Audio File", type=["wav", "mp3", "m4a"], key="audio")
-if uploaded_audio is not None:
-    st.audio(uploaded_audio, format="audio/wav")
-    st.write("Audio file uploaded. Optionally, you can transcribe it using Whisper.")
-    # Uncomment the following code if you have the 'whisper' package installed
-    # and want to perform transcription:
-    """
-    import whisper
-    model = whisper.load_model("base")
-    temp_audio_path = f"temp_{uploaded_audio.name}"
-    with open(temp_audio_path, "wb") as f:
-         f.write(uploaded_audio.getbuffer())
-    result = model.transcribe(temp_audio_path)
-    st.write("Transcription:", result["text"])
-    """
-
-# --- DISPLAY CHAT HISTORY ---
+# Display chat messages in chat-like style
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- USER INPUT & CHAT LOGIC ---
-user_input = st.chat_input("Type your message…")
+# --- INPUT SECTION: Chat or File Inquiry ---
+# The user can type a message in the chat input.
+# You might also add instructions if a file was uploaded.
+instruction = "Type your message…" if not uploaded_file_text else "Type your message or ask a question about the uploaded file…"
+user_input = st.chat_input(instruction)
+
 if user_input:
+    # Save the user message in the database
     add_message(st.session_state.current_conv, "user", user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Build previous conversation context from the last 5 messages
+    # Build previous conversation context from last few messages
     recent = st.session_state.chat_history[-5:]
     prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
 
+    # Use the combined context: the content from the uploaded file (if any) and the documents from the default source.
+    # This example concatenates all document content – you may want to further filter or prioritize based on your needs.
+    combined_context = "\n".join(d.page_content for d in all_docs)
+    
     # Generate answer from the model using ChatGroq
     llm = ChatGroq(model=model_choice, api_key=st.secrets["GROQ_API_KEY"])
     doc_chain = create_stuff_documents_chain(llm, prompt)
@@ -270,7 +278,7 @@ if user_input:
     result = chain.invoke({
         "input": user_input,
         "previous_conversation": prev_ctx,
-        "context": "\n".join(d.page_content for d in all_docs),
+        "context": combined_context,
     })
     answer = result["answer"].split("</think>")[-1].strip()
 
