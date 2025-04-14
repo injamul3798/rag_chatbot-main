@@ -2,14 +2,16 @@ import os
 import time
 import uuid
 import sqlite3
+import io
 from datetime import datetime, timedelta
+from PIL import Image
 
 import streamlit as st
 st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")  # Must be at the very top
 
 from dotenv import load_dotenv
 
-# LangChain imports
+# LangChain and other imports remain the same...
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -23,7 +25,7 @@ from langchain.docstore.document import Document
 load_dotenv()
 DB_FILE = "chat_history.db"
 
-# --- Helper function for current time with +6hr offset ---
+# --- Helper functions for time ---
 def current_time():
     return datetime.now() + timedelta(hours=6)
 
@@ -159,8 +161,7 @@ prompt = ChatPromptTemplate([
     """
 ])
 
-# --- STREAMLIT UI & LOGIC ---
-# Remove additional sidebar title and headings for simplicity
+# --- STREAMLIT SIDEBAR & CHAT UI ---
 st.sidebar.title("")
 user_id = st.session_state.user_id
 
@@ -171,17 +172,13 @@ if not convs:
     st.session_state.current_conv = first_id
     convs = load_conversations(user_id)
 
-# Function to shorten long titles to a maximum length
 def shorten_title(title, max_length=30):
     return title if len(title) <= max_length else title[:max_length-3] + "..."
 
-# Sidebar - Conversation list using a selectbox displaying only titles
-# Use shortened titles for display (if needed)
 conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
 selected_title = st.sidebar.selectbox("Conversations", list(conversation_options.keys()))
 st.session_state.current_conv = conversation_options[selected_title]
 
-# Option to delete the currently selected conversation
 if st.sidebar.button("🗑️ Delete Selected"):
     delete_conversation(st.session_state.current_conv)
     convs = load_conversations(user_id)
@@ -191,7 +188,6 @@ if st.sidebar.button("🗑️ Delete Selected"):
         st.session_state.current_conv = create_new_conversation(user_id, "Chat " + current_time_short())
     conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
 
-# Sidebar - New Conversation with custom title in an expander
 with st.sidebar.expander("➕ New Conversation"):
     custom_title = st.text_input("Enter chat title", key="new_chat_title")
     if st.button("Create Chat", key="create_new_conv"):
@@ -199,7 +195,6 @@ with st.sidebar.expander("➕ New Conversation"):
         new_id = create_new_conversation(user_id, new_title)
         st.session_state.current_conv = new_id
 
-# Load & display chat history for the selected conversation
 history = load_messages(st.session_state.current_conv)
 st.session_state.chat_history = history
 
@@ -213,12 +208,50 @@ model_choice = st.selectbox("Model for responses:", [
     "whisper-large-v3",
 ])
 
-# Display chat messages in the main area
+# --- FILE, IMAGE, AND VOICE UPLOAD SECTION ---
+st.subheader("Additional Upload Options")
+# PDF / File Upload Section
+uploaded_pdf = st.file_uploader("Upload PDF File", type=["pdf"])
+if uploaded_pdf is not None:
+    # Save the file temporarily
+    pdf_path = f"temp_{uploaded_pdf.name}"
+    with open(pdf_path, "wb") as f:
+        f.write(uploaded_pdf.getbuffer())
+    st.success(f"PDF file '{uploaded_pdf.name}' uploaded!")
+    # If needed, process the PDF file using your PyPDFLoader:
+    loader = PyPDFLoader(pdf_path)
+    new_docs = loader.load()
+    st.write(f"Loaded {len(new_docs)} pages from the PDF.")
+
+# Image Upload Section
+uploaded_image = st.file_uploader("Upload an Image", type=["png", "jpg", "jpeg"], key="image")
+if uploaded_image is not None:
+    image = Image.open(uploaded_image)
+    st.image(image, caption="Uploaded Image", use_column_width=True)
+
+# Voice / Audio Upload Section
+uploaded_audio = st.file_uploader("Upload an Audio File", type=["wav", "mp3", "m4a"], key="audio")
+if uploaded_audio is not None:
+    st.audio(uploaded_audio, format="audio/wav")
+    st.write("Audio file uploaded. Optionally, you can transcribe it using Whisper.")
+    # Uncomment the following code if you have the 'whisper' package installed
+    # and want to perform transcription:
+    """
+    import whisper
+    model = whisper.load_model("base")
+    temp_audio_path = f"temp_{uploaded_audio.name}"
+    with open(temp_audio_path, "wb") as f:
+         f.write(uploaded_audio.getbuffer())
+    result = model.transcribe(temp_audio_path)
+    st.write("Transcription:", result["text"])
+    """
+
+# --- DISPLAY CHAT HISTORY ---
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Handle new user input
+# --- USER INPUT & CHAT LOGIC ---
 user_input = st.chat_input("Type your message…")
 if user_input:
     add_message(st.session_state.current_conv, "user", user_input)
