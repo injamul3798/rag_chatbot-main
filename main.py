@@ -10,8 +10,7 @@ st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")  # Must b
 from dotenv import load_dotenv
 
 # LangChain imports
-from langchain_community.document_loaders import PyPDFLoader  # For PDFs
-# You might add other loaders if you wish to support additional file types, e.g., TextLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -24,7 +23,7 @@ from langchain.docstore.document import Document
 load_dotenv()
 DB_FILE = "chat_history.db"
 
-# --- Helper functions for time ---
+# --- Helper function for current time with +6hr offset ---
 def current_time():
     return datetime.now() + timedelta(hours=6)
 
@@ -125,91 +124,21 @@ init_db()
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 
-# --- FUNCTIONS FOR PROCESSING UPLOADED FILES ---
-def process_uploaded_file(uploaded_file):
-    """
-    Processes an uploaded file (PDF or text) and returns its content as a string.
-    Extend this function to support additional file types if needed.
-    """
-    if uploaded_file is not None:
-        file_type = uploaded_file.type
-        # Example: If it's a PDF, use PyPDFLoader (you could also support txt files directly)
-        if file_type == "application/pdf":
-            # If you are loading from an in-memory file, you might need to pass the stream
-            loader = PyPDFLoader(uploaded_file)
-            docs = loader.load()
-            content = "\n".join(d.page_content for d in docs)
-            return content
-        elif file_type.startswith("text"):
-            # For text files, decode to a string (assuming UTF-8)
-            return uploaded_file.read().decode("utf-8")
-    return None
-
-# --- SIDE BAR: Conversation and File Upload Section ---
-st.sidebar.title("")
-user_id = st.session_state.user_id
-
-# File upload option in the sidebar (or you may place it in the main area)
-uploaded_file = st.sidebar.file_uploader("Upload a file for context (PDF or TXT)", type=["pdf", "txt"])
-# Process file if uploaded; else you can fall back to default file or no file context
-uploaded_file_text = process_uploaded_file(uploaded_file)
-# Optionally show a message confirming file upload
-if uploaded_file_text:
-    st.sidebar.success("File uploaded successfully!")
-
-# Load user's conversations
-convs = load_conversations(user_id)
-if not convs:
-    first_id = create_new_conversation(user_id, "Chat " + current_time_short())
-    st.session_state.current_conv = first_id
-    convs = load_conversations(user_id)
-
-def shorten_title(title, max_length=30):
-    return title if len(title) <= max_length else title[:max_length-3] + "..."
-
-# Sidebar - Conversation list
-conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
-selected_title = st.sidebar.selectbox("Conversations", list(conversation_options.keys()))
-st.session_state.current_conv = conversation_options[selected_title]
-
-if st.sidebar.button("🗑️ Delete Selected"):
-    delete_conversation(st.session_state.current_conv)
-    convs = load_conversations(user_id)
-    if convs:
-        st.session_state.current_conv = convs[0]["id"]
-    else:
-        st.session_state.current_conv = create_new_conversation(user_id, "Chat " + current_time_short())
-    conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
-
-with st.sidebar.expander("➕ New Conversation"):
-    custom_title = st.text_input("Enter chat title", key="new_chat_title")
-    if st.button("Create Chat", key="create_new_conv"):
-        new_title = custom_title.strip() if custom_title.strip() else "Chat " + current_time_short()
-        new_id = create_new_conversation(user_id, new_title)
-        st.session_state.current_conv = new_id
-
-# --- VECTOR STORE SETUP --- 
-# Here, we build the retriever using either the uploaded file or a default file
+# --- VECTOR STORE SETUP ---
 @st.cache_resource
-def build_retriever(file_text):
-    # If file_text is provided from the uploader, use it as context
-    if file_text:
-        text = file_text
-    else:
-        # Fall back to a default file (e.g., "who_am_I.pdf") if no upload is given
-        with open("who_am_I.pdf", "rb") as f:
-            loader = PyPDFLoader(f)
-            docs = loader.load()
-            text = "\n".join(d.page_content for d in docs)
+def build_retriever():
+    loader = PyPDFLoader("who_am_I.pdf")
+    docs = loader.load()
+    text = "\n".join(d.page_content for d in docs)
     splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=20)
     chunks = splitter.split_text(text)
     documents = [Document(page_content=chunk) for chunk in chunks]
-    
+
     embed = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     store = FAISS.from_documents(documents, embed)
     return store.as_retriever(), documents
 
-retriever, all_docs = build_retriever(uploaded_file_text)
+retriever, all_docs = build_retriever()
 
 # --- PROMPT TEMPLATE ---
 prompt = ChatPromptTemplate([
@@ -230,7 +159,50 @@ prompt = ChatPromptTemplate([
     """
 ])
 
-# --- MAIN AREA: Chat Display ---
+# --- STREAMLIT UI & LOGIC ---
+# Remove additional sidebar title and headings for simplicity
+st.sidebar.title("")
+user_id = st.session_state.user_id
+
+# Load user's conversations
+convs = load_conversations(user_id)
+if not convs:
+    first_id = create_new_conversation(user_id, "Chat " + current_time_short())
+    st.session_state.current_conv = first_id
+    convs = load_conversations(user_id)
+
+# Function to shorten long titles to a maximum length
+def shorten_title(title, max_length=30):
+    return title if len(title) <= max_length else title[:max_length-3] + "..."
+
+# Sidebar - Conversation list using a selectbox displaying only titles
+# Use shortened titles for display (if needed)
+conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
+selected_title = st.sidebar.selectbox("Conversations", list(conversation_options.keys()))
+st.session_state.current_conv = conversation_options[selected_title]
+
+# Option to delete the currently selected conversation
+if st.sidebar.button("🗑️ Delete Selected"):
+    delete_conversation(st.session_state.current_conv)
+    convs = load_conversations(user_id)
+    if convs:
+        st.session_state.current_conv = convs[0]["id"]
+    else:
+        st.session_state.current_conv = create_new_conversation(user_id, "Chat " + current_time_short())
+    conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
+
+# Sidebar - New Conversation with custom title in an expander
+with st.sidebar.expander("➕ New Conversation"):
+    custom_title = st.text_input("Enter chat title", key="new_chat_title")
+    if st.button("Create Chat", key="create_new_conv"):
+        new_title = custom_title.strip() if custom_title.strip() else "Chat " + current_time_short()
+        new_id = create_new_conversation(user_id, new_title)
+        st.session_state.current_conv = new_id
+
+# Load & display chat history for the selected conversation
+history = load_messages(st.session_state.current_conv)
+st.session_state.chat_history = history
+
 st.title("💬 Chat with Injamul")
 model_choice = st.selectbox("Model for responses:", [
     "llama-3.1-8b-instant",
@@ -241,36 +213,23 @@ model_choice = st.selectbox("Model for responses:", [
     "whisper-large-v3",
 ])
 
-# Load & display chat history for the selected conversation
-history = load_messages(st.session_state.current_conv)
-st.session_state.chat_history = history
-
-# Display chat messages in chat-like style
+# Display chat messages in the main area
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- INPUT SECTION: Chat or File Inquiry ---
-# The user can type a message in the chat input.
-# You might also add instructions if a file was uploaded.
-instruction = "Type your message…" if not uploaded_file_text else "Type your message or ask a question about the uploaded file…"
-user_input = st.chat_input(instruction)
-
+# Handle new user input
+user_input = st.chat_input("Type your message…")
 if user_input:
-    # Save the user message in the database
     add_message(st.session_state.current_conv, "user", user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Build previous conversation context from last few messages
+    # Build previous conversation context from the last 5 messages
     recent = st.session_state.chat_history[-5:]
     prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
 
-    # Use the combined context: the content from the uploaded file (if any) and the documents from the default source.
-    # This example concatenates all document content – you may want to further filter or prioritize based on your needs.
-    combined_context = "\n".join(d.page_content for d in all_docs)
-    
     # Generate answer from the model using ChatGroq
     llm = ChatGroq(model=model_choice, api_key=st.secrets["GROQ_API_KEY"])
     doc_chain = create_stuff_documents_chain(llm, prompt)
@@ -278,7 +237,7 @@ if user_input:
     result = chain.invoke({
         "input": user_input,
         "previous_conversation": prev_ctx,
-        "context": combined_context,
+        "context": "\n".join(d.page_content for d in all_docs),
     })
     answer = result["answer"].split("</think>")[-1].strip()
 
