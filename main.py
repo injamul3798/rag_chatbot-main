@@ -2,6 +2,7 @@ import os
 import time
 import uuid
 import sqlite3
+import tempfile
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -10,7 +11,7 @@ st.set_page_config(page_title="💬 Chat with Injamul", layout="wide")  # Must b
 from dotenv import load_dotenv
 
 # LangChain imports
-from langchain_community.document_loaders import PyPDFLoader  # For PDF processing
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -23,7 +24,9 @@ from langchain.docstore.document import Document
 load_dotenv()
 DB_FILE = "chat_history.db"
 
-# --- Helper functions for time ---
+#########################################
+# HELPER / UTILITY FUNCTIONS
+#########################################
 def current_time():
     return datetime.now() + timedelta(hours=6)
 
@@ -33,7 +36,9 @@ def current_time_str(fmt="%Y-%m-%d %H:%M:%S"):
 def current_time_short():
     return current_time().strftime("%H:%M:%S")
 
-# --- DATABASE UTILITIES ---
+#########################################
+# DATABASE SETUP AND FUNCTIONS
+#########################################
 def init_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
@@ -61,10 +66,7 @@ def init_db():
 def load_conversations(user_id):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    c.execute(
-        "SELECT id, title FROM conversations WHERE user_id = ? ORDER BY id DESC",
-        (user_id,)
-    )
+    c.execute("SELECT id, title FROM conversations WHERE user_id = ? ORDER BY id DESC", (user_id,))
     rows = c.fetchall()
     conn.close()
     return [{"id": r[0], "title": r[1]} for r in rows]
@@ -75,10 +77,8 @@ def create_new_conversation(user_id, title=None):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     now = current_time_str()
-    c.execute(
-        "INSERT INTO conversations (user_id, title, created_at) VALUES (?, ?, ?)",
-        (user_id, title, now)
-    )
+    c.execute("INSERT INTO conversations (user_id, title, created_at) VALUES (?, ?, ?)", 
+              (user_id, title, now))
     conv_id = c.lastrowid
     conn.commit()
     conn.close()
@@ -119,35 +119,60 @@ def push_to_github():
     os.system('git commit -m "Update conversation data"')
     os.system("git push")
 
-# --- INITIALIZE & IDENTIFY USER ---
+#########################################
+# STREAMLIT SETUP
+#########################################
 init_db()
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 
-# --- FUNCTIONS FOR PROCESSING UPLOADED FILES ---
+#########################################
+# FILE PROCESSING
+#########################################
 def process_uploaded_file(uploaded_file):
     """
-    Processes an uploaded file (PDF or text) and returns its content as a string.
+    Processes an uploaded file (PDF or text) by:
+    1. Saving to a temporary file
+    2. Loading and reading the content
+    Returns the extracted text, or None if invalid.
     """
     if uploaded_file is not None:
-        file_type = uploaded_file.type
-        if file_type == "application/pdf":
-            loader = PyPDFLoader(uploaded_file)
+        file_type = uploaded_file.type.lower()
+        
+        # 1. Write to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            tmp_file.flush()
+            tmp_path = tmp_file.name
+        
+        # 2. Depending on file type, load from temp path
+        if "pdf" in file_type:
+            # Use PyPDFLoader with the path (string)
+            loader = PyPDFLoader(tmp_path)
             docs = loader.load()
-            content = "\n".join(d.page_content for d in docs)
-            return content
-        elif file_type.startswith("text"):
-            return uploaded_file.read().decode("utf-8")
+            os.remove(tmp_path)  # remove temp file after reading
+            return "\n".join(d.page_content for d in docs)
+        elif "text" in file_type:
+            # If it's a text file, read the file as text
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                file_content = f.read()
+            os.remove(tmp_path)
+            return file_content
+        else:
+            # Not a supported file type
+            os.remove(tmp_path)
+            return None
     return None
 
-# --- SIDE BAR: Conversation and File Upload Section ---
+#########################################
+# SIDEBAR - FILE UPLOAD & CONVERSATIONS
+#########################################
 st.sidebar.title("")
 user_id = st.session_state.user_id
 
-# File upload option
-uploaded_file = st.sidebar.file_uploader("Upload a file for context (PDF or TXT)", type=["pdf", "txt"])
-# Process file if uploaded; else use default context
+uploaded_file = st.sidebar.file_uploader("Upload PDF or Text for context", type=["pdf", "txt"])
 uploaded_file_text = process_uploaded_file(uploaded_file)
+
 if uploaded_file_text:
     st.sidebar.success("File uploaded successfully!")
 
@@ -161,7 +186,6 @@ if not convs:
 def shorten_title(title, max_length=30):
     return title if len(title) <= max_length else title[:max_length-3] + "..."
 
-# Sidebar - Conversation list
 conversation_options = {shorten_title(conv["title"]): conv["id"] for conv in convs}
 selected_title = st.sidebar.selectbox("Conversations", list(conversation_options.keys()))
 st.session_state.current_conv = conversation_options[selected_title]
@@ -182,28 +206,35 @@ with st.sidebar.expander("➕ New Conversation"):
         new_id = create_new_conversation(user_id, new_title)
         st.session_state.current_conv = new_id
 
-# --- VECTOR STORE SETUP --- 
+#########################################
+# VECTOR STORE SETUP
+#########################################
 @st.cache_resource
 def build_retriever(file_text):
-    # Use the uploaded file content if available; otherwise, load from default file.
+    """
+    If user uploaded a file, use that content. Otherwise,
+    load a default PDF file from path for context.
+    """
     if file_text:
         text = file_text
     else:
-        # Pass the file path directly to PyPDFLoader to avoid file handle errors.
-        loader = PyPDFLoader("who_am_I.pdf")
+        loader = PyPDFLoader("who_am_I.pdf")  # Provide a path string here
         docs = loader.load()
         text = "\n".join(d.page_content for d in docs)
+
     splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=20)
     chunks = splitter.split_text(text)
     documents = [Document(page_content=chunk) for chunk in chunks]
-    
+
     embed = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     store = FAISS.from_documents(documents, embed)
     return store.as_retriever(), documents
 
 retriever, all_docs = build_retriever(uploaded_file_text)
 
-# --- PROMPT TEMPLATE ---
+#########################################
+# PROMPT TEMPLATE
+#########################################
 prompt = ChatPromptTemplate([
     """
     You have to act like Injamul. Your bio is provided in the context.
@@ -222,8 +253,11 @@ prompt = ChatPromptTemplate([
     """
 ])
 
-# --- MAIN AREA: Chat Display ---
+#########################################
+# MAIN PAGE - CHAT DISPLAY
+#########################################
 st.title("💬 Chat with Injamul")
+
 model_choice = st.selectbox("Model for responses:", [
     "llama-3.1-8b-instant",
     "gemma2-9b-it",
@@ -233,16 +267,17 @@ model_choice = st.selectbox("Model for responses:", [
     "whisper-large-v3",
 ])
 
-# Load & display chat history for the selected conversation
 history = load_messages(st.session_state.current_conv)
 st.session_state.chat_history = history
 
+# Display existing chat history
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-instruction = "Type your message…" if not uploaded_file_text else "Type your message or ask a question about the uploaded file…"
-user_input = st.chat_input(instruction)
+# Chat input prompt
+prompt_text = "Type your message…" if not uploaded_file_text else "Type your message or ask about the uploaded file…"
+user_input = st.chat_input(prompt_text)
 
 if user_input:
     add_message(st.session_state.current_conv, "user", user_input)
@@ -250,11 +285,14 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    recent = st.session_state.chat_history[-5:]
-    prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent)
-    
+    # Build short context from last few messages
+    recent_msgs = st.session_state.chat_history[-5:]
+    prev_ctx = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent_msgs)
+
+    # Combine all document content
     combined_context = "\n".join(d.page_content for d in all_docs)
-    
+
+    # Use LLM to generate the answer
     llm = ChatGroq(model=model_choice, api_key=st.secrets["GROQ_API_KEY"])
     doc_chain = create_stuff_documents_chain(llm, prompt)
     chain = create_retrieval_chain(retriever, doc_chain)
@@ -263,8 +301,13 @@ if user_input:
         "previous_conversation": prev_ctx,
         "context": combined_context,
     })
-    answer = result["answer"].split("</think>")[-1].strip()
-    
+    raw_answer = result["answer"]
+
+    # In some LLM outputs, a "<think>" tag may appear. 
+    # If so, we remove any chain-of-thought text by splitting on "</think>"
+    answer = raw_answer.split("</think>")[-1].strip()
+
+    # Save assistant's message
     add_message(st.session_state.current_conv, "assistant", answer)
     st.session_state.chat_history.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
