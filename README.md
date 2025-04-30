@@ -32,4 +32,4 @@
 - **Email:** injamulhaque9117@gmail.com  
 - **Phone:** 01745-449117  
 - **GitHub:** [github.com/injamul3798](https://github.com/injamul3798)  
-- **LinkedIn:** [linkedin.com/in/injamul-haque21/](https://www.linkedin.com/in/injamul-haque21/)
+- **LinkedIn:** [linkedin.com/in/injamul-haque/](https://www.linkedin.com/in/injamul-haque98/)
